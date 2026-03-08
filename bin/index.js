@@ -6,7 +6,7 @@ import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 puppeteer.use(StealthPlugin());
 
 const app = express();
-app.use(express.json()); // Permite receber o CNPJ do n8n em formato JSON
+app.use(express.json());
 
 app.post('/gerar-das', async (req, res) => {
     const { cnpj } = req.body;
@@ -15,11 +15,10 @@ app.post('/gerar-das', async (req, res) => {
         return res.status(400).json({ sucesso: false, erro: 'CNPJ não informado.' });
     }
 
-    console.log(`[${cnpj}] Iniciando processamento...`);
+    console.log(`[${cnpj}] 🤖 Iniciando robô...`);
     let browser;
 
     try {
-        // Configuração vital para rodar no EasyPanel/Docker sem quebrar
         browser = await puppeteer.launch({
             headless: true,
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome', 
@@ -33,79 +32,71 @@ app.post('/gerar-das', async (req, res) => {
 
         const page = await browser.newPage();
 
-        // OTTIMIZAÇÃO: Bloqueia imagens, fontes e CSS para o robô ficar mais rápido e leve
+        // Otimização de performance (Bloqueia o que não é essencial)
         await page.setRequestInterception(true);
         page.on('request', (req) => {
-            if (['image', 'stylesheet', 'font'].includes(req.resourceType())) {
+            if (['image', 'font'].includes(req.resourceType())) {
                 req.abort();
             } else {
                 req.continue();
             }
         });
 
-        // ====================================================================
-        // LÓGICA DE NAVEGAÇÃO DO ROBÔ NO PORTAL PGMEI
-        // ====================================================================
+        // Configura um timeout global maior (60 segundos) devido à lentidão da Receita
+        page.setDefaultNavigationTimeout(60000);
 
-        console.log(`[${cnpj}] Passo 1: Acessando portal PGMEI...`);
-        await page.goto('http://www8.receita.fazenda.gov.br/SimplesNacional/Aplicacoes/ATSPO/pgmei.app/Identificacao', { waitUntil: 'networkidle2', timeout: 30000 });
+        console.log(`[${cnpj}] 1. Acessando Identificação...`);
+        await page.goto('https://www8.receita.fazenda.gov.br/SimplesNacional/Aplicacoes/ATSPO/pgmei.app/Identificacao', { waitUntil: 'networkidle2' });
 
-        console.log(`[${cnpj}] Passo 2: Digitando CNPJ...`);
-        await page.waitForSelector('#cnpj', { timeout: 10000 }); // Aguarda o campo de CNPJ aparecer
-        await page.type('#cnpj', cnpj, { delay: 50 }); // Digita como um humano
+        console.log(`[${cnpj}] 2. Preenchendo CNPJ...`);
+        await page.waitForSelector('#cnpj', { visible: true });
+        await page.type('#cnpj', cnpj, { delay: 100 });
 
-        console.log(`[${cnpj}] Passo 3: Entrando no sistema...`);
+        console.log(`[${cnpj}] 3. Autenticando (Aguardando resposta lenta da Receita)...`);
         await Promise.all([
             page.waitForNavigation({ waitUntil: 'networkidle2' }),
-            page.click('button[type="submit"]') // Clica no botão "Continuar"
+            page.click('button[type="submit"]')
         ]);
 
-        // Verifica se a Receita retornou algum erro (ex: CNPJ inválido ou não é MEI)
-        const alertError = await page.$('.alert-danger');
-        if (alertError) {
-            const erroTexto = await page.$eval('.alert-danger', el => el.innerText);
-            throw new Error(`Mensagem da Receita: ${erroTexto.trim()}`);
+        // Verifica erro de login (CNPJ inválido, etc)
+        const hasError = await page.$('.alert-danger');
+        if (hasError) {
+            const msg = await page.$eval('.alert-danger', el => el.innerText);
+            throw new Error(`Receita Federal diz: ${msg.trim()}`);
         }
 
-        console.log(`[${cnpj}] Passo 4: Acessando menu de Emissão...`);
-        // Procura o link que leva para a emissão da guia
-        const menuEmitir = await page.$('a[href*="emissao"]');
-        if (!menuEmitir) throw new Error("Menu 'Emitir Guia' não encontrado. O layout do site pode ter mudado.");
+        console.log(`[${cnpj}] 4. Login feito! Indo direto para a URL de Emissão...`);
+        // Em vez de procurar o link, vamos direto no link que você me passou
+        await page.goto('https://www8.receita.fazenda.gov.br/SimplesNacional/Aplicacoes/ATSPO/pgmei.app/emissao', { waitUntil: 'networkidle2' });
+
+        console.log(`[${cnpj}] 5. Selecionando Ano de Apuração...`);
+        // Aguarda o seletor do ano carregar
+        await page.waitForSelector('select', { visible: true });
         
+        const anoAtual = new Date().getFullYear().toString();
+        await page.select('select', anoAtual);
+
+        console.log(`[${cnpj}] 6. Confirmando seleção do ano...`);
         await Promise.all([
             page.waitForNavigation({ waitUntil: 'networkidle2' }),
-            menuEmitir.click()
+            page.click('button[type="submit"]')
         ]);
 
-        console.log(`[${cnpj}] Passo 5: Selecionando o ano atual...`);
-        const anoAtual = new Date().getFullYear().toString(); // Pega o ano atual dinamicamente (ex: "2026")
-        
-        // Tenta selecionar o ano no dropdown (select)
-        const selectAno = await page.$('select'); 
-        if (selectAno) {
-            await page.select('select', anoAtual);
-            await Promise.all([
-                page.waitForNavigation({ waitUntil: 'networkidle2' }),
-                page.click('button[type="submit"]') // Clica em OK/Continuar
-            ]);
-        }
-
-        console.log(`[${cnpj}] Sucesso! Robô chegou na tabela de apuração dos meses.`);
+        console.log(`[${cnpj}] ✅ Sucesso! Chegamos na tela de seleção de meses.`);
         const urlFinal = page.url();
 
         await browser.close();
 
-        // Retorna os dados para o seu n8n
         return res.status(200).json({
             sucesso: true,
             cnpj: cnpj,
-            ano_apuracao: anoAtual,
-            status: "Navegação concluída com sucesso até a tabela de meses",
-            url_parada: urlFinal
+            ano: anoAtual,
+            url_alvo: urlFinal,
+            mensagem: "Robô logou e acessou a tabela de meses com sucesso."
         });
 
     } catch (error) {
-        console.error(`[${cnpj}] Erro no processamento:`, error.message);
+        console.error(`[${cnpj}] ❌ Erro:`, error.message);
         if (browser) await browser.close();
         return res.status(500).json({ sucesso: false, erro: error.message });
     }
@@ -113,5 +104,5 @@ app.post('/gerar-das', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 API do Robô PGMEI rodando na porta ${PORT}`);
+    console.log(`🚀 API PGMEI rodando na porta ${PORT}`);
 });
