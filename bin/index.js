@@ -20,9 +20,10 @@ app.post('/gerar-das', async (req, res) => {
 
     try {
         // Configuração vital para rodar no EasyPanel/Docker sem quebrar
-        browser = await puppeteer.launch({
+     browser = await puppeteer.launch({
             headless: true,
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH, 
+            // Adicionamos o || '/usr/bin/google-chrome' como rota de segurança
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome', 
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
