@@ -1,77 +1,63 @@
-#!/usr/bin/env node
-import inquirer from 'inquirer';
-import dotenv from 'dotenv';
-import { validateCNPJ } from './validateCNPJ.js';
-import { validateYear, validateMonth } from './validateDate.js';
-import { scraping } from './scraping.js';
+import express from 'express';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 
-// Load environment variables from .env file
-dotenv.config();
+// Ativa o modo furtivo para evitar bloqueios da Receita
+puppeteer.use(StealthPlugin());
 
-console.log = function() {};
+const app = express();
+app.use(express.json()); // Permite receber o CNPJ do n8n em formato JSON
 
-async function main() {
-  console.log('\x1b[36m', '**************************', '\x1b[0m');
-  console.log('\x1b[36m', '** Emissão Guia DAS MEI **', '\x1b[0m');
-  console.log('\x1b[36m', '**************************', '\x1b[0m');
-  console.log('');
-  const d = new Date();
-  inquirer
-  .prompt([
-    {
-      type: "list",
-      name: "headless",
-      message: "Usar modo interativo (headless off)?",
-      choices: ["Não", "Sim"],
-      filter(answers) {
-        return answers === 'Sim' ? false : true;
-      }
-    },
-    {
-      type: 'input',
-      name: 'cnpj',
-      message: 'Informe o CNPJ:',
-      default: process.env.DEFAULT_CNPJ_INPUT,
-      async validate(value) {
-        const valid = await validateCNPJ(value);
-        return valid[0] || valid[1];
-      },
-      filter(answers) {
-        return answers.toString();
-      }
-    },
-    {
-      type: 'input',
-      name: 'year',
-      message: 'Informe o ano:',
-      default: d.getFullYear(),
-      validate(value) {
-        const valid = validateYear(value);
-        return valid[0] || valid[1];
-      },
-      filter(answers) {
-        return answers.toString();
-      }
-    },
-    {
-      type: 'input',
-      name: 'month',
-      message: 'Informe o mês:',
-      default: ("0" + (d.getMonth())).slice(-2),
-      validate(value) {
-        const valid = validateMonth(value);
-        return valid[0] || valid[1];
-      },
-      filter(answers) {
-        return answers.toString();
-      }
-    },
-  ])
-  .then((answers) => {
-    scraping(answers);
-  });
+app.post('/gerar-das', async (req, res) => {
+    const { cnpj } = req.body;
 
-}
+    if (!cnpj) {
+        return res.status(400).json({ sucesso: false, erro: 'CNPJ não informado.' });
+    }
 
-main();
+    console.log(`Iniciando geração de DAS para o CNPJ: ${cnpj}`);
+    let browser;
 
+    try {
+        // Configuração vital para rodar no EasyPanel/Docker sem quebrar
+        browser = await puppeteer.launch({
+            headless: true,
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH, 
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu'
+            ]
+        });
+
+        const page = await browser.newPage();
+
+        // ====================================================================
+        // AQUI ENTRA A LÓGICA DE NAVEGAÇÃO DO SCRIPT ORIGINAL
+        // Você vai colar os comandos que entram no site da receita, preenchem 
+        // o CNPJ, clicam nos botões e geram o PDF.
+        // ====================================================================
+
+        // Exemplo de como a resposta final deve voltar para o seu n8n:
+        const linkBoleto = "LINK_EXTRAIDO_AQUI"; 
+        
+        await browser.close();
+
+        return res.status(200).json({
+            sucesso: true,
+            cnpj: cnpj,
+            link_pdf: linkBoleto
+        });
+
+    } catch (error) {
+        console.error("Erro no processamento:", error);
+        if (browser) await browser.close();
+        return res.status(500).json({ sucesso: false, erro: error.message });
+    }
+});
+
+const PORT = 3000;
+app.listen(PORT, () => {
+    console.log(`🚀 API do Robô PGMEI rodando na porta ${PORT}`);
+});
